@@ -1,0 +1,153 @@
+#!/usr/bin/python
+
+import sys
+import stat
+import time
+import struct
+import errno
+import xattr
+import os.path
+
+from optparse import OptionParser
+
+# The bits that go into the extended attributes we want to read
+ATTR_PREFIX = 'trusted.glusterfs'
+ATTR = 'xtime'
+
+# Modes by which we look for volume UUID / mountpoint
+BY_VOLUME = 0
+BY_MOUNTPOINT = 1
+
+# Form the key to get ATTR by reading the volume info file in /etc/glusterd
+def get_attrkey_by_volinfo(vol):
+	try:
+		fp = open(vol)
+	except IOError, err:
+		print err
+		print "Unable to open '" + vol + "', did you supply a valid volume?"
+		sys.exit(1)
+
+	for line in fp:
+		if line.count('=') == 1:
+			key, value = line.split('=', 1)
+			value = value.strip()
+			key = key.strip()
+			if key == 'volume-id':
+				uuid = value
+	fp.close()
+	if len(uuid) > 0:
+		return ATTR_PREFIX + '.' + uuid + '.' + ATTR
+	else:
+		return ATTR
+
+# Iterate over a list of attributes to find the key we need to get ATTR
+def get_attrkey_by_xattrlist(path):
+	try:
+		attribs = xattr.listxattr(path)
+	except OSError:
+		raise
+	for attrib in attribs:
+		if attrib.find(ATTR) > 0:
+			return attrib
+	return ATTR
+
+# If only given a volume name, we have to resolve its mount point to call getxattr()
+# We do that by parsing /etc/mtab and tokenizing any line containing #
+def get_volume_mp(volume):
+	try:
+		fp = open("/etc/mtab")
+	except IOError:
+		print "Unable to open /etc/mtab"
+		sys.exit(1)
+
+	for line in fp:
+		if line.count('#') == 1:
+			vol, mp, type = line.split(' ', 2)
+			tmp = vol.split('/', 1)
+			if volume == tmp[1]:
+				fp.close()
+				return mp
+
+	fp.close()
+	print "Unable to find mount point for volume '" + volume + "', is it mounted?"
+	sys.exit(1)
+			
+# Get the actual xtime attribute
+def get_xtime_attrib(path, method):
+	try:
+		if method == BY_MOUNTPOINT:
+			return struct.unpack("!II", xattr.getxattr(path, get_attrkey_by_xattrlist(path)))
+		elif method == BY_VOLUME:
+			return struct.unpack("!II", xattr.getxattr(get_volume_mp(path), 
+				get_attrkey_by_volinfo("/etc/glusterd/vols/" + path + "/info")))
+		else:
+			print "Invalid method to get_xtime_attrib() (this is a bug)"
+			sys.exit(1)
+
+	except OSError, err:
+		if err.errno in(ENOENT, ENODATA, ENOTDIR):
+			print err
+			print "Is the given volume / mountpoint '" + path + "' still valid?"
+		else:
+			print err
+			print "Unhandled exception in get_xtime_attrib(), please report this as a bug"
+			sys.exit(1)
+
+	except IOError, err:
+		print err
+		print "Problem with reading extended attributes, please report this as a bug"
+		sys.exit(1)
+
+def main():
+	parser = OptionParser(description="%prog is a tool to determine the time of the last georeplication sync. You can specify the name of a volume, or its mount point.",
+		usage="%prog [options] <volume|mountpoint>", version="1.0")
+	parser.add_option("-H", "--human", action="store_true", dest="showhuman", default=False,
+		help="Output dates in human readable format, default is epoch")
+	parser.add_option("-d", "--delta", action="store_true", dest="showdelta", default=False,
+		help="Print the number of seconds between the last sync and now")
+	(options, args) = parser.parse_args()
+
+	if len(sys.argv) < 2:
+		parser.print_usage()
+		print "You must supply at least a volume name or a valid mount point"
+		print "Try --help for more information"
+		sys.exit(1)
+
+	if len(args) == 0:
+		print "You must supply a valid mount point or a valid volume name"
+		print "Try --help for more information"
+		sys.exit(1)
+
+	if os.geteuid() > 0:
+		print "You must be root to run this program"
+		sys.exit(1)
+
+	target = args[0]
+
+	if os.path.isdir(target):
+		ret = get_xtime_attrib(target, BY_MOUNTPOINT)
+	else:
+		if target.count('/') > 0:
+			print "Invalid mount point: " + target
+			sys.exit(1)
+		ret = get_xtime_attrib(target, BY_VOLUME)
+
+	if options.showdelta:
+		curtime = time.time()
+#		if options.showhuman:
+#			e1 = datetime.fromtimestamp(curtime)
+#			e2 = datetime.fromtimestamp(ret[0])
+#			delta = dateutil.relativedelta(e2, e1)
+#			print "%d years, %d months, %d days, %d hours, %d minutes and %d seconds" % (delta.years, delta.months, delta.days, delta.hours, delta.minutes, delta.seconds)
+#		else:
+		delta = curtime - ret[0]
+		print int(delta)
+		sys.exit(0)
+
+	if options.showhuman:
+		print time.ctime(ret[0])
+	else:
+		print ret[0]
+
+if __name__ == "__main__":
+    main()

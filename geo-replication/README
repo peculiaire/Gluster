@@ -1,0 +1,1 @@
+This is very much a work in progress, right now geostatus is limited to finding the maximum mtime on a Gluster mount, coordination with gsyncd at the remote site is required for full functionality and is coming soonish.
