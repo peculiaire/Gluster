@@ -30,6 +30,6 @@ install:
 	@install -m 0640 conf/$(PROGRAM)/$(PROGRAM).cfg $(sysconfdir)/$(PROGRAM)/
 	@install -m 0750 conf/$(PROGRAM)/ganglia.d/* $(sysconfdir)/$(PROGRAM)/ganglia.d/
 	@install -m 0750 sbin/$(PROGRAM) $(sbindir)/
-
+	@install -m 0750 sbin/niopid $(sbindir)/
 clean:
 	@rm -f $(CLEANDIRS)
