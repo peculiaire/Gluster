@@ -30,7 +30,7 @@ NFS_IO_KBS_TX=`niopid -t -i 1 -d 5 -P ${GLUSTER_NFS_PID} | awk '{print $5}'`
 [ -n "${NFS_IO_KBS_TX}" ] || NFS_IO_KBS_TX="0.00"
 
 cat << EOF
-gmetric --name=brick_${GLUSTER_BRICK_MP}_disk_read_io --value=${IO_KBS_READ} --type=int32 --uints=kilobytes --group=${GLUSTER_VOLNAME}
+gmetric --name=brick_${GLUSTER_BRICK_MP}_disk_read_io --value=${IO_KBS_READ} --type=int32 --units=kilobytes --group=${GLUSTER_VOLNAME}
 gmetric --name=brick_${GLUSTER_BRICK_MP}_disk_write_io --value=${IO_KBS_WRITE} --type=int32 --units=kilobytes --group=${GLUSTER_VOLNAME}
 gmetric --name=fuse_net_io_rx --value=${NET_IO_KBS_RX} --type=int32 --units=kilobytes --group=${GLUSTER_VOLNAME}
 gmetric --name=fuse_net_io_tx --value=${NET_IO_KBS_TX} --type=int32 --units=kilobytes --group=${GLUSTER_VOLNAME}
