@@ -1,0 +1,16 @@
+Source: gcollector
+Section: unknown
+Priority: extra
+Maintainer: Joy Scharmen <joy@lindenlab.com>
+Build-Depends: debhelper (>= 5)
+Standards-Version: 3.7.2
+
+Package: gcollector
+Architecture: any
+Suggests: glusterfs
+Depends:
+Description: Gcollector - monitoring GlusterFS
+ Gcollector is a program designed to make monitoring of the Gluster distributed filesystem as painless
+ as possible. It was written to run and consolidate the output of many different programs
+ needed to monitor the health and I/O statistics of Gluster file system volumes, but
+ should be useful for many other cases.

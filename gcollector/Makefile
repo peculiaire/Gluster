@@ -1,10 +1,12 @@
 # All PHONY targets, here for convenience
 
 PROGRAM = gcollect
+DEBNAME = gcollector
+DESTDIR = ''
 
-prefix = /usr
+prefix = usr
 sbindir = $(prefix)/sbin
-sysconfdir = /etc
+sysconfdir = etc
 
 SUBDIRS = \
 	./ \
@@ -24,12 +26,22 @@ CLEANDIRS = \
 all: clean
 
 install:
-	@install -m 0600 -d $(sysconfdir)/$(PROGRAM)
-	@install -m 0600 -d $(sysconfdir)/$(PROGRAM)/ganglia.d
-	@install -m 0600 -d $(sysconfdir)/$(PROGRAM)/ganglia.custom.d
-	@install -m 0640 conf/$(PROGRAM)/$(PROGRAM).cfg $(sysconfdir)/$(PROGRAM)/
-	@install -m 0750 conf/$(PROGRAM)/ganglia.d/* $(sysconfdir)/$(PROGRAM)/ganglia.d/
-	@install -m 0750 sbin/$(PROGRAM) $(sbindir)/
-	@install -m 0750 sbin/niopid $(sbindir)/
+	@install -m 0600 -d $(DESTDIR)/$(sysconfdir)/$(PROGRAM)
+	@install -m 0600 -d $(DESTDIR)/$(sysconfdir)/$(PROGRAM)/ganglia.d
+	@install -m 0600 -d $(DESTDIR)/$(sysconfdir)/$(PROGRAM)/ganglia.custom.d
+	@install -m 0640 conf/$(PROGRAM)/$(PROGRAM).cfg $(DESTDIR)/$(sysconfdir)/$(PROGRAM)/
+	@install -m 0750 conf/$(PROGRAM)/ganglia.d/* $(DESTDIR)/$(sysconfdir)/$(PROGRAM)/ganglia.d/
+	@install -m 0750 sbin/$(PROGRAM) $(DESTDIR)/$(sbindir)/
+	@install -m 0750 sbin/niopid $(DESTDIR)/$(sbindir)/
 clean:
 	@rm -f $(CLEANDIRS)
+
+deb:
+	mkdir -pv $(CURDIR)/debian/$(DEBNAME)/$(sysconfdir)/$(PROGRAM)/
+	mkdir -pv $(CURDIR)/debian/$(DEBNAME)/$(sysconfdir)/$(PROGRAM)/ganglia.d/
+	mkdir -pv $(CURDIR)/debian/$(DEBNAME)/$(sysconfdir)/$(PROGRAM)/ganglia.custom.d/
+	mkdir -pv $(CURDIR)/debian/$(DEBNAME)/$(sbindir)/
+	debuild -uc -us -b
+
+debclean:
+	debuild clean

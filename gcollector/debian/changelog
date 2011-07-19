@@ -1,0 +1,5 @@
+gcollector (1.0) unstable; urgency=low
+
+  * Initial debian release.
+
+ -- Joy Scharmen <joy@lindenlab.com>  Tue, 19 Jul 2011 22:30:43 +0000
