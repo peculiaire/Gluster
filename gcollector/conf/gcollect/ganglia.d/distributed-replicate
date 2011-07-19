@@ -1,0 +1,43 @@
+#!/bin/bash
+# The following environmental variables will be set, which you can use:
+# GLUSTER_VOLNAME : Name of the volume
+# GLUSTER_VOLTYPE : Type of volume being examined
+# GLUSTER_BRICK : Name of the brick being examined
+# GLUSTER_BRICK_MP : Mount point of the brick being examined
+# GLUSTER_GLUSTERFSD_PID : PID of the glusterfsd process behind a brick
+# GLUSTER_NFS_PID : PID of the Gluster NFS service
+# If gcollect detected an error, such as a NFS/SMB/glusterd process not running where
+# it should be, GLUSTER_ERROR will be set and will contain a quoted error string. You should
+# check that value _first_, before doing anything else and just report the error in whatever
+# format is needed then exit.
+
+[ -n "${GLUSTER_ERROR}" ] && {
+	echo "gmetric --name=Error --value=\"${GLUSTER_ERROR}\" --type=string --group=${GLUSTER_VOLNAME}"
+	exit 0
+}
+
+DEVICE=`grep ${GLUSTER_BRICK_MP} /etc/mtab | awk '{print $1}' 2>/dev/null`
+DEV=`basename ${DEVICE}`
+IO_KBS_READ=`iostat -k ${DEVICE} | grep ^${DEV} | awk '{print $3}' 2>/dev/null`
+IO_KBS_WRITE=`iostat -k ${DEVICE} | grep ^${DEV} | awk '{print $4}' 2>/dev/null`
+NET_IO_KBS_RX=`niopid -t -i 1 -d 5 -P ${GLUSTER_GLUSTERFSD_PID} | awk '{print $6}'`
+NET_IO_KBS_TX=`niopid -t -i 1 -d 5 -P ${GLUSTER_GLUSTERFSD_PID} | awk '{print $5}'`
+NFS_IO_KBS_RX=`niopid -t -i 1 -d 5 -P ${GLUSTER_NFS_PID} | awk '{print $6}'`
+NFS_IO_KBS_TX=`niopid -t -i 1 -d 5 -P ${GLUSTER_NFS_PID} | awk '{print $5}'`
+
+[ -n "${NET_IO_KBS_RX}" ] || NET_IO_KBS_RX="0.00"
+[ -n "${NET_IO_KBS_TX}" ] || NET_IO_KBS_TX="0.00"
+[ -n "${NFS_IO_KBS_RX}" ] || NFS_IO_KBS_RX="0.00"
+[ -n "${NFS_IO_KBS_TX}" ] || NFS_IO_KBS_TX="0.00"
+
+cat << EOF
+gmetric --name=brick_${GLUSTER_BRICK_MP}_disk_read_io --value=${IO_KBS_READ} --type=int32 --uints=kilobytes --group=${GLUSTER_VOLNAME}
+gmetric --name=brick_${GLUSTER_BRICK_MP}_disk_write_io --value=${IO_KBS_WRITE} --type=int32 --units=kilobytes --group=${GLUSTER_VOLNAME}
+gmetric --name=fuse_net_io_rx --value=${NET_IO_KBS_RX} --type=int32 --units=kilobytes --group=${GLUSTER_VOLNAME}
+gmetric --name=fuse_net_io_tx --value=${NET_IO_KBS_TX} --type=int32 --units=kilobytes --group=${GLUSTER_VOLNAME}
+gmetric --name=nfs_net_io_rx --value=${NFS_IO_KBS_RX} --type=int32 --units=kilobytes --group=nfs-common
+gmetric --name=nfs_net_io_tx --value=${NFS_IO_KBS_TX} --type=int32 --units=kilobytes --group=nfs-common
+EOF
+
+exit 0
+

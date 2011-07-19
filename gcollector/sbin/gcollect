@@ -1,0 +1,366 @@
+#!/usr/bin/env python
+"""\
+A unified front end data collector for monitoring practically anything
+
+This program parses the output of a kickoff program (in this case, the gluster
+client) in order to determine what other programs need to be launched in order
+to get all of the data that is needed for comprehensive monitoring.
+
+It does this by building a simple dictionary (in this case, INI style) of the
+first program's output, then launches additional helpers based on the newly
+created in-memory dictionary.
+
+In our case, the output of 'gluster volume info all' is parsed to get a list
+of configured volumes, then additional modules are imported (by volume type)
+to harvest data about the volumes.
+
+This program should be considered alpha quality and is still very much a work
+in progress. Immediate planned changes include:
+
+ - Make the parsing of the initial program modular (e.g have main() load a
+   module approrpriate for parsing whatever is specified in the configuration
+   file, right now the mini parser is hard coded to read the gluster client
+
+ - Make this a self contained class for which main() is just a customer
+
+ - Handling exceptions properly, re-factoring, etc, etc, (patches are welcome!)
+"""
+
+import sys, os, subprocess, tempfile, shlex, syslog, ConfigParser
+from socket import gethostname
+from optparse import OptionParser
+
+DEBUG=False
+PROGNAME='gcollector'
+DEFCONFIG="/etc/gcollect/gcollect.cfg"
+
+# Eventually, all of this will be combined into a class. Right now, this serves to demonstrate
+# how lots of different tools can be brought together to monitor network and disk IO on a per
+# volume (which implies per process) level.
+
+def validate_glusterfsd_process(volname, brick, volcfg):
+	"Check to ensure glusterfsd is running for a given brick"
+	# FIXME: This is fragile
+	if DEBUG:
+		sys.stderr.write("    Checking for glusterfsd process for brick " + brick + " in volume " + volname + "\n")
+	found = False
+	cmd = shlex.split("/usr/bin/pgrep glusterfsd")
+	try:
+		p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=None, shell=False)
+	except OSError, err:
+		sys.stderr.write("Unable to run " + cmd + ": " + err[1] + "\n")
+		volcfg.set(volname, "error", "Could not execute pgrep to examine glusterfsd")
+		return False
+	p.wait()
+	proclist = p.communicate(input=None)[0]
+	if len(proclist) is 0:
+		volcfg.set(volname, "error", "No glusterfsd processes are running (at all)")
+		return False
+	pidlist = []
+	pidlist = proclist.split('\n')
+	for pid in pidlist:
+		if pid is not None:
+			pid = pid.strip('\n')
+			if len(pid) > 0:
+				proc = "/proc/" + pid + "/cmdline"
+				if DEBUG:
+					sys.stderr.write("      Examining " + proc + "\n")
+				try:
+					fp = open(proc)
+				except IOError, err:
+					sys.stderr.write("Ignoring phantom process " + pid + " while examining glusterfsd\n")
+					continue
+				args = []
+				cmdline = fp.readline()
+				args = cmdline.split('--')
+				mp = brick.split(':', 1)[1]
+				for arg in args:
+					if mp in arg:
+						found = True
+						if DEBUG:
+							sys.stderr.write("      Found matching pid " + pid + "\n")
+						volcfg.set(volname, "glusterfsd_pid", pid)
+						fp.close()
+						break
+				fp.close()
+
+	if found:
+		return True
+	else:
+		volcfg.set(volname, "error", "No glusterfsd process is running for brick " + brick.split(':', 1)[1]+ " in volume " + volname)
+		return False
+
+def validate_nfs_process(cfg, volcfg, volname):
+	"Checks for a running NFS process (doesn't guarantee that NFS is responsive)"
+	if DEBUG:
+		sys.stderr.write("    Checking for running NFS process for volume " + volname + "\n")
+	nfslock = cfg.get("data", "nfslock")
+	if os.path.isfile(nfslock):
+		try:
+			fp = open(nfslock)
+		except IOError, err:
+			errmsg = "Unable to open PID file " + nfslock
+			sys.stderr.write(errmsg + "\n")
+			volcfg.set(volname, "error", errmsg)
+			return False
+		pid = fp.readline()
+		pid = pid.strip('\n')
+		if os.path.isdir("/proc/" + pid):
+			if DEBUG:
+				sys.stderr.write("     Found pid %d alive and well\n" % (int(pid)))
+			volcfg.set(volname, "nfs_pid", pid)
+			return True
+
+	volcfg.set(volname, "error", "NFS does not appear to be running")
+	return False
+
+def validate_smb_process(cfg, volcfg, volname):
+	"Checks for a running samba process"
+	# TODO: Actually do this.
+	if DEBUG:
+		sts.stderr.write("    Checking for running SMB process - volume " + volname + " is exported\n")
+	return True
+
+def validate_volume_process(volname, volcfg, cfg):
+	"Check to see if we should be validating NFS or SMB processes for any given volume"
+	if volcfg.getboolean(volname, "nfs") is True:
+		if validate_nfs_process(cfg, volcfg, volname) is False:
+			return False
+	if volcfg.getboolean(volname, "smb") is True:
+		if validate_smb_process(cfg, volcfg, volname) is False:
+			return False
+	return True
+
+def is_smb_export(volname, volcfg, cfg):
+	"Parse a samba configuration file to see if a volume is exported"
+	return False
+
+def brick_is_local(brick):
+	"Determine if a given volume brick is actually on this machine, this should probably be smarter"
+	(rhost, mp) = brick.split(':', 1)
+	host = gethostname()
+	shost = host.split('.', 1)[0]
+	if host != rhost:
+		if shost != rhost:
+			# if the system hostname is not the FQDN, but the brick was created _using_ the FQDN, this is the only
+			# way we can match it. Kludge here temporary to look out for lazy system administrators.
+			# If we have two bricks, foo.bar.com:/export/foo and foo.baz.com:/export/baz , this match will inappropriately
+			# fire. Moral of the story? Use the fully qualified domain name when setting a system hostname!
+			bad_idea = rhost.split('.', 1)[0]
+			if bad_idea != shost:
+				return False
+	if os.path.isdir(mp):
+		return True
+	else:
+		return False
+
+def dispatch(cfg, volcfg):
+	"Iterate over a sorted volume configuration dictionary and dispatch the appropriate hook"
+	ret = []
+	process_stopped = cfg.getboolean("prefs", "process_stopped")
+	check_smb = cfg.getboolean("prefs", "check_samba")
+	# All output from helpers is in a predictable format, we keep appending it to a file which
+	# we then pack and ship.
+	fp = tempfile.NamedTemporaryFile(mode="w+")
+	for volume in volcfg.sections():
+		if DEBUG:
+			sys.stderr.write("Processing volume: " + volume + "\n")
+		if process_stopped == False:
+			if volcfg.get(volume, "status") != "started":
+				if DEBUG:
+					sys.stderr.write("Skipping non-running volume " + volume + "\n")
+				continue
+		volcfg.set(volume, "glusterfsd_pid", "0")
+		volcfg.set(volume, "nfs_pid", "0")
+		if check_smb is True:
+			if is_smb_export(volume, volcfg, cfg):
+				volcfg.set(volume, "smb", "true")
+		dispatcher = volcfg.get(volume, "type");
+		if DEBUG:
+			sys.stderr.write("  Loading dispatcher for " + dispatcher + "\n")
+		for brick in range(1, int(volcfg.get(volume, "bricks"))):
+			brick = volcfg.get(volume, str(brick))
+			if brick_is_local(brick):
+				if DEBUG:
+					sys.stderr.write("   Processing brick " + brick + "\n")
+				# If a custom hook exists, use it instead.
+				voltype = volcfg.get(volume, "type")
+				mp = brick.split(':',1)[1]
+				# At this point, we could start kicking off threads, but that's racey with the way we're doing output
+				if DEBUG:
+					sys.stderr.write("  Verifying supporting processes for " + volume + "\n")
+				if validate_volume_process(volume, volcfg, cfg) is False:
+					proc_error = True
+				elif validate_glusterfsd_process(volume, brick, volcfg) is False:
+					proc_error = True
+				else:
+					proc_error = False
+				#TODO: if config:collector contains multiple collectors, we need to iterate over them and dispatch
+				#the ones that are specified.
+				base = cfg.get("config", "confdir") + "/"
+				hook = base + cfg.get("config", "collector") + ".d/" + voltype 
+				custom = base + cfg.get("config", "collector") + ".custom.d/" + voltype
+				if os.path.isfile(custom):
+					helper = custom
+				else:
+					helper = hook
+				if DEBUG:
+					sys.stderr.write("  Dispatching helper " + helper + " for volume " + volume + "\n")
+				helper = shlex.split(helper)
+				# Populate the environment so hooks in any language can get them
+				# without having to parse arguments
+				os.putenv("GLUSTER_VOLNAME", volume)
+				os.putenv("GLUSTER_VOLTYPE", voltype)
+				os.putenv("GLUSTER_BRICK", brick)
+				os.putenv("GLUSTER_BRICK_MP", mp)
+				os.putenv("GLUSTER_NFS_PID", volcfg.get(volume, "nfs_pid"))
+				os.putenv("GLUSTER_GLUSTERFSD_PID", volcfg.get(volume, "glusterfsd_pid"))
+				# hooks should check this first to see if there's some kind of error to report, and just report it
+				# if that's the case
+				if proc_error is True:
+					os.putenv("GLUSTER_ERROR", volcfg.get(volume, "error"))
+				try:
+					p = subprocess.Popen(helper, stdout=fp, stderr=None, shell=False)
+					p.wait()
+				except OSError, err:
+					sys.stderr.write("Unable to run " + helper[0] + ": " + err[1] + "\n")
+					continue
+			else:
+				if DEBUG:
+					sys.stderr.write("   Skipping non-local brick " + brick + "\n")
+	# Lets go back to the beginning of the file, pack it in a list and return it
+	fp.seek(0)
+	if DEBUG:
+		sys.stderr.write("\nDone Iterating\n\n")
+	for line in fp:
+		line = line.strip('\n')
+		if len(line) > 0:
+			if DEBUG:
+				sys.stderr.write("Got Output: " + line + "\n")
+			ret.append(line)
+	fp.close()
+	return ret
+
+def main():
+	global DEBUG
+	parser = OptionParser(description="%prog is a statistics collection tool",
+		usage="%prog [options]", version="0.2")
+	parser.add_option("-c", "--cfgfile", dest="cfgfile", default=DEFCONFIG,
+		help="Specify configuration file (default: " + DEFCONFIG + ")")
+	parser.add_option("-C", "--collector", dest="collector", default=None,
+		help="Specify collection format (default: config driven)")
+	parser.add_option("-d", "--debug", action="store_true", dest="debug", default=False,
+		help="Be verbose about what is happening (dev)")
+	parser.add_option("-D", "--dump", action="store_true", dest="dump", default=False,
+		help="Print sorted volume dump and exit (dev)")
+	(options, args) = parser.parse_args()
+	if options.debug == True:
+		DEBUG=True
+	volcfg = ConfigParser.RawConfigParser()
+	config = ConfigParser.SafeConfigParser()
+	config.read(options.cfgfile)
+	if options.collector is not None:
+		config.set("cfg", "collector", options.collector)
+	if DEBUG:
+		sys.stderr.write("*** Configuration Dump ***\n")
+		config.write(sys.stderr)
+		sys.stderr.write("*** End Configuration Dump ***\n")
+	# Running totals we later pack into our working dictionary
+	totalvol = 0
+	totalbrick = 0
+	# Raised if we find output from gluster we can't handle
+	parse_err = 0
+	gluster = config.get("data", "gluster")
+	# Currently, the only 'safe' way of getting the volume configuration is to parse the output
+	# of the Gluster client. This is broadly because we have no way of sanely / safely locking the
+	# plain text glusterd configuration files.
+	#
+	# This will (soon) be replaced by simply interacting with the API, treat as a temporary hack
+	fp = tempfile.NamedTemporaryFile(mode="w+")
+	cmd = shlex.split(gluster)
+	try:
+		p = subprocess.Popen(cmd, stdout=fp, stderr=subprocess.PIPE, shell=False)
+	except OSError, err:
+		sys.stderr.write("Unable to run " + gluster + ": " + err[1] + "\n")
+		sys.exit(1)
+	p.wait()
+	err = p.communicate(input=None)[1]
+	# We expect nothing to stderr. If we see something there, the output format changed or
+	# something went wrong. Either way, we can't continue.
+	if len(err):
+		sys.stderr.write("Unexpected error when running " + gluster + ": %s\n" % (err[1]))
+		sys.exit(1)
+	# At this point we have the output and know we can work with it
+	# We do minimal error checking to be sure the output is how we
+	# expect it.
+	try:
+		# A mini parser based on expected output
+		# TODO: Make this modular, perhaps named after the executable being run
+		fp.seek(0)
+		for line in fp:
+			if len(line.strip('\n')) > 0:
+				line = line.replace(' ', '')
+				(key, value) = line.split(':', 1)
+				value = value.strip('\n')
+				if key == "VolumeName":
+					curvol = value
+					volcfg.add_section(curvol)
+					curvol = value
+					curbrick = 1
+					totalvol += 1
+					volcfg.set(curvol, "nfs", "true")
+					volcfg.set(curvol, "smb", "false")
+				elif key == "Bricks":
+					pass
+				elif key == "OptionsReconfigured":
+					pass
+				elif key == "Transport-type":
+					pass
+				elif key == "NumberofBricks":
+					# distribute-replicate reports number of bricks as i x y = n
+					if '=' in value:
+						value = value.split('=',1)[1]
+					volcfg.set(curvol, "bricks", value)
+				elif 'Brick' in key:
+					volcfg.set(curvol, str(curbrick), value)
+					curbrick += 1
+					totalbrick += 1
+				elif key == "Type":
+					volcfg.set(curvol, "type", value.lower())
+				elif key == "Status":
+					volcfg.set(curvol, "status", value.lower())
+				elif key == "nfs.disable":
+					if value == "on":
+						volcfg.set(curvol, "nfs", "false")
+				elif len(value) > 0:
+					sys.stderr.write("%s: Ignoring unfamiliar keypair: %s => %s\n" % (PROGNAME, key, value))
+				else:
+					sys.stderr.write("%s: Found input I can't handle: %s %s\n" % (PROGNAME, key, value))
+					parse_err = 1
+					break
+	# End Parser
+	finally:
+		if parse_err:
+			sys.stderr.write("Exiting due to parser error\n")
+			sys.exit(1)
+		if totalvol < 0:
+			print "No volumes to report"
+			fp.close()
+			sys.exit(0)
+		fp.close()
+		if options.dump is True:
+			volcfg.write(sys.stdout)
+			sys.exit(0)
+		# Now, we're confident enough to proceed
+		if DEBUG:
+			volcfg.write(sys.stdout)
+			sys.stderr.write("Found a total of %d brick(s) comprising %d volume(s)\n" % (totalbrick, totalvol))
+		ret = dispatch(config, volcfg)
+		# TODO, how do we ship the results of dispatch to Ganglia?
+		if DEBUG:
+			sys.stderr.write("\nBack to main(), dispatch() returned:\n")
+		for line in ret:
+			sys.stdout.write(line + "\n")
+
+if __name__ == "__main__":
+	main()

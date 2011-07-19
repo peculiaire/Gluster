@@ -1,0 +1,94 @@
+Overview:
+---------
+Gcollector is a program designed to make monitoring of the Gluster distributed filesystem as painless
+as possible. It was written to run and consolidate the output of many different programs
+needed to monitor the health and I/O statistics of Gluster file system volumes, but 
+should be useful for many other cases.
+
+When you run gcollector, the output of 'gluster volume info' is parsed, organized into
+a sorted structure and analyzed. Various helper programs also known as 'hooks' are then
+run, which output statistics in any format you can imagine.
+
+This is the first, proof of concept release of gcollector. You can expect some bugs and
+possibly even strange behavior. This release is designed to illustrate a simple, straight
+forward way of monitoring a Gluster cluster.
+
+Version history:
+-------------
+19-7-11	Version .1
+
+Installation:
+-------------
+
+Type 'make install'. 
+
+You can now run gcollect manually, or via cron to gather statistics.
+The output of the Ganglia collector (default) is a series of gmetric commands that can
+just be run.
+
+For instance:
+
+gcollect > update_stats && /bin/sh update_stats && rm update_stats
+
+The following files and directories are installed:
+
+/etc/gcollect/gcollect.cfg
+  - A well commented configuration file
+
+/etc/gcollect/ganglia.d/*
+  - Helper scripts and programs that gcollect launches to actually collect and output
+    data. This release has support for Ganglia, future releases may include support
+    for Cacti, Nagios and other popular monitoring platforms.
+
+/etc/gcollect/ganglia.custom.d/*
+  - If you'd like to modify the collector scripts, copy the ones you want to change
+    to this directory and they'll be run instead. Changes here are not over-written
+    when you update gcollector, which allows you to stay up to date while leaving
+    room for custom changes
+
+/usr/sbin/gcollect
+  - The main program, see gcollect --help for available options
+
+/usr/sbin/niopid
+  - A tool based on nethogs to collect network I/O on a per process (single process)
+    level
+
+After installing, simply type 'gcollect'. Note, it can take up to 20 seconds for data
+to be returned, as gcollect samples network I/O in five second intervals per process.
+
+Remember, everything here is alpha quality. We plan on improving it greatly over the
+next coming weeks and hopefully releasing a completely modular tool that has use way
+beyond simply monitoring GlusterFS.
+
+Motivation & Design:
+--------------------
+Why did we write this? Because we think monitoring should be crazy easy, especially
+after you spent time setting up your gluster cluster and getting everything 'just
+right'. Disk and network I/O on a per volume (via per process) basis are critical
+statistics to watch when administrating a large cluster.
+
+We wanted to make a tool for the community that satisfys the 'easy' part, while
+also being useful for monitoring other services and system statistics. For the most
+part, gcollect has a snap in design that is very easy to customize and almost
+completely modular. We're working now to make it 100% modular, so the output of any
+arbitrary commands (or just simple python code) can be loaded at run time based on
+the configuration.
+
+We chose Python because it is extremely portable and with a little care backwards
+compatible with older versions. The tool has been tested from 2.4x up to the latest
+2.7 build, and should be relatively easy to port to 3.x when the time comes. We had
+to make sure this will run even on very sparse (kickstarted / debootstraped) virtual
+machines, all the way up to bleeding edge versions of popular distributions. 
+
+Immediate Roadmap:
+------------------
+Most of what is in gcollect could be made into a proper class, which other Python
+progams could import. We'll work on that once all methods are ironed out.
+
+Make the parsing code pluggable, so it can accept any ConfigParser dictionary or
+read any suitable external file
+
+Move all process checking into a 'sanity' method with a user definable callback
+
+Allow more than one collector to run, e.g. collect stats for Ganglia and Cacti
+
