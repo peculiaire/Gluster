@@ -178,7 +178,9 @@ def dispatch(cfg, volcfg):
 		dispatcher = volcfg.get(volume, "type");
 		if DEBUG:
 			sys.stderr.write("  Loading dispatcher for " + dispatcher + "\n")
-		for brick in range(1, int(volcfg.get(volume, "bricks"))):
+		brick_range = int(volcfg.get(volume, "bricks"))
+		brick_range += 1
+		for brick in range(1, brick_range):
 			brick = volcfg.get(volume, str(brick))
 			if brick_is_local(brick):
 				if DEBUG:
