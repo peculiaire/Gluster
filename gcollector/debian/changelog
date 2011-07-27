@@ -1,3 +1,9 @@
+gcollector (1.1) unstable; urgency=low
+
+  * range doesn't count from 1, it counts from 0. increment brick count so it actually covers all bricks.
+
+ -- Joy Scharmen <joy@lindenlab.com>  Wed, 27 Jul 2011 22:31:02 +0000
+
 gcollector (1.0) unstable; urgency=low
 
   * Initial debian release.
